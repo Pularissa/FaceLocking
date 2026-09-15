@@ -6,10 +6,13 @@ Ensures external physical USB cameras are prioritized over PC built-in webcams a
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
+import subprocess
 import time
 from typing import Optional, Union, List, Dict, Tuple
 import cv2
+import numpy as np
 
 # Keywords identifying PC internal/integrated webcams
 INTERNAL_CAMERA_KEYWORDS = [
@@ -37,6 +40,98 @@ VIRTUAL_CAMERA_KEYWORDS = [
     "unity",
     "fake",
 ]
+
+
+class FFmpegCamera:
+    """Small VideoCapture-compatible fallback for Windows DirectShow devices."""
+
+    def __init__(self, device_name: str, width: int = 640, height: int = 480, fps: int = 30, probe: bool = False):
+        self.width = width
+        self.height = height
+        self.frame_bytes = width * height * 3
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise RuntimeError("ffmpeg is not installed")
+
+        self.process = subprocess.Popen(
+            [
+                ffmpeg,
+                "-loglevel", "error",
+                "-f", "dshow",
+                "-video_size", f"{width}x{height}",
+                "-framerate", str(fps),
+                "-i", f"video={device_name}",
+                *(["-t", "1"] if probe else []),
+                "-f", "rawvideo",
+                "-pix_fmt", "bgr24",
+                "pipe:1",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+        )
+        self.device_name = device_name
+
+    def isOpened(self) -> bool:
+        return self.process.poll() is None
+
+    def read(self):
+        if not self.isOpened() or self.process.stdout is None:
+            return False, None
+        data = bytearray()
+        while len(data) < self.frame_bytes:
+            chunk = self.process.stdout.read(self.frame_bytes - len(data))
+            if not chunk:
+                break
+            data.extend(chunk)
+        if len(data) != self.frame_bytes:
+            return False, None
+        frame = np.frombuffer(data, dtype=np.uint8).reshape((self.height, self.width, 3))
+        return True, frame
+
+    def set(self, prop_id: int, value: float) -> bool:
+        return False
+
+    def get(self, prop_id: int) -> float:
+        if prop_id == cv2.CAP_PROP_FRAME_WIDTH:
+            return float(self.width)
+        if prop_id == cv2.CAP_PROP_FRAME_HEIGHT:
+            return float(self.height)
+        return 0.0
+
+    def release(self):
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+        if self.process.stdout is not None:
+            self.process.stdout.close()
+
+
+def _open_ffmpeg_camera(preferred_name: str):
+    if not sys.platform.startswith("win") or not shutil.which("ffmpeg"):
+        return None
+
+    names = [preferred_name]
+    for camera in list_available_cameras():
+        name = str(camera["name"])
+        if name not in names and not camera["is_virtual"]:
+            names.append(name)
+
+    for name in names:
+        try:
+            probe = FFmpegCamera(name, probe=True)
+            ok, _ = probe.read()
+            probe.release()
+            if ok:
+                fallback = FFmpegCamera(name)
+                print(f"[Camera] FFmpeg fallback active: '{name}' [640x480]")
+                return fallback
+        except Exception:
+            continue
+    return None
 
 
 def list_available_cameras(max_probe: int = 6) -> List[Dict[str, Union[int, str, bool]]]:
@@ -173,10 +268,13 @@ def open_camera(
             cap = cv2.VideoCapture(target_source)
 
     if not cap.isOpened():
-        raise RuntimeError(
-            f"Failed to open camera source {target_source} ('{cam_name}'). "
-            f"Run with '--list-cams' to inspect connected devices."
-        )
+        fallback = _open_ffmpeg_camera(cam_name)
+        if fallback is None:
+            raise RuntimeError(
+                f"Failed to open camera source {target_source} ('{cam_name}'). "
+                "Run with '--list-cams' to inspect connected devices."
+            )
+        return fallback
 
     if width:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
