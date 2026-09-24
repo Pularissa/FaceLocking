@@ -118,6 +118,8 @@ def main(
     print("  'R'       : Recenter Servo (90 deg)")
     print("  '1'       : Instant Direct 1-to-1 Mode (Max accuracy)")
     print("  '2'       : Smooth Cinematic Mode")
+    print("  'L'       : Lock the currently recognized face")
+    print("  'U'       : Unlock and select the best recognized face")
     print("  '+' / '-' : Fine-tune sensitivity")
     print("  SPACE     : Pause / Resume Tracking")
     print("  'Q'       : Quit")
@@ -137,6 +139,10 @@ def main(
     last_print_time = time.time()
     last_seen_time = 0.0
     prev_angle_deg = 0.0
+    face_locked = False
+    locked_face_center = None
+    last_expression = ""
+    last_expression_message_time = 0.0
 
     # Initialize servo to 90 degrees center
     if ser:
@@ -156,6 +162,7 @@ def main(
 
         best_dist = None
         target_box = None
+        target_candidates = []
         now = time.time()
 
         for f in faces:
@@ -175,7 +182,26 @@ def main(
 
             if is_target and (best_dist is None or dist < best_dist):
                 best_dist = dist
-                target_box = f
+            if is_target:
+                face_center = ((f.x1 + f.x2) / 2.0, (f.y1 + f.y2) / 2.0)
+                target_candidates.append((dist, f, face_center))
+
+        if target_candidates:
+            if face_locked and locked_face_center is not None:
+                target_box = min(
+                    target_candidates,
+                    key=lambda candidate: (
+                        (candidate[2][0] - locked_face_center[0]) ** 2
+                        + (candidate[2][1] - locked_face_center[1]) ** 2
+                    ),
+                )[1]
+            else:
+                target_box = min(target_candidates, key=lambda candidate: candidate[0])[1]
+
+            locked_face_center = (
+                (target_box.x1 + target_box.x2) / 2.0,
+                (target_box.y1 + target_box.y2) / 2.0,
+            )
 
         direction_label = "SEARCHING..."
         offset_px = 0.0
@@ -183,6 +209,12 @@ def main(
 
         if target_box is not None:
             last_seen_time = now
+            expression = target_box.expression
+            if expression:
+                last_expression = expression
+                if now - last_expression_message_time > 1.0:
+                    print(f"[Expression] {expression}")
+                    last_expression_message_time = now
 
             # High-precision facial anchor: Weighted average of nose tip and eye midpoint
             if target_box.kps is not None and len(target_box.kps) == 5:
@@ -294,9 +326,19 @@ def main(
         hw_str = "MOUNTED CAM" if (hardware_mode == 1) else "FIXED POINTER"
         mode_str = "1-to-1 DIRECT" if (tracking_mode == 1) else "SMOOTH CINEMATIC"
         inv_str = "INVERTED" if invert_direction else "NORMAL"
+        lock_str = "LOCKED" if face_locked else "AUTO"
 
-        cv2.putText(frame, f"Target: {target_name} | [{direction_label}]", (15, 28),
+        cv2.putText(frame, f"Target: {target_name} | {lock_str} | [{direction_label}]", (15, 28),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
+
+        if last_expression and now - last_expression_message_time < 1.5:
+            banner_text = f"MESSAGE: {last_expression}"
+            (text_width, text_height), _ = cv2.getTextSize(
+                banner_text, cv2.FONT_HERSHEY_SIMPLEX, 0.75, 2
+            )
+            cv2.rectangle(frame, (10, 92), (25 + text_width, 105 + text_height), (0, 0, 0), -1)
+            cv2.putText(frame, banner_text, (18, 98 + text_height),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2)
         
         hud_line2 = f"Servo: {new_int_angle} deg | Offset: {angle_error_deg:+.1f} deg | Mode: {mode_str} [1/2]"
         cv2.putText(frame, hud_line2, (15, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 255, 255), 2)
@@ -346,6 +388,20 @@ def main(
         elif key == ord("2"):
             tracking_mode = 2
             print("\n[Mode] Switched to: SMOOTH CINEMATIC MODE\n")
+        elif key == ord("l"):
+            if target_box is not None:
+                face_locked = True
+                locked_face_center = (
+                    (target_box.x1 + target_box.x2) / 2.0,
+                    (target_box.y1 + target_box.y2) / 2.0,
+                )
+                print("\n[Face Lock] Locked current recognized face\n")
+            else:
+                print("\n[Face Lock] No recognized target face to lock\n")
+        elif key == ord("u"):
+            face_locked = False
+            locked_face_center = None
+            print("\n[Face Lock] Unlocked; automatic target selection resumed\n")
         elif key in (ord("+"), ord("=")):
             gain = min(gain + 0.15, 3.0)
             print(f"[Config] Gain/Sensitivity: {gain:.2f}x")

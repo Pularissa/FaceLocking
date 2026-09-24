@@ -9,6 +9,7 @@ import argparse
 import shutil
 import sys
 import subprocess
+import threading
 import time
 from typing import Optional, Union, List, Dict, Tuple
 import cv2
@@ -71,23 +72,45 @@ class FFmpegCamera:
             bufsize=0,
         )
         self.device_name = device_name
+        self._lock = threading.Lock()
+        self._latest_frame = None
+        self._reader_stopped = threading.Event()
+        self._reader_thread = threading.Thread(target=self._read_latest_frame, daemon=True)
+        self._reader_thread.start()
+
+    def _read_latest_frame(self):
+        if self.process.stdout is None:
+            return
+
+        while not self._reader_stopped.is_set() and self.process.poll() is None:
+            data = bytearray()
+            while len(data) < self.frame_bytes:
+                chunk = self.process.stdout.read(min(32768, self.frame_bytes - len(data)))
+                if not chunk:
+                    self._reader_stopped.set()
+                    return
+                data.extend(chunk)
+
+            frame = np.frombuffer(data, dtype=np.uint8).reshape((self.height, self.width, 3)).copy()
+            with self._lock:
+                self._latest_frame = frame
 
     def isOpened(self) -> bool:
         return self.process.poll() is None
 
     def read(self):
-        if not self.isOpened() or self.process.stdout is None:
+        if not self.isOpened():
             return False, None
-        data = bytearray()
-        while len(data) < self.frame_bytes:
-            chunk = self.process.stdout.read(self.frame_bytes - len(data))
-            if not chunk:
-                break
-            data.extend(chunk)
-        if len(data) != self.frame_bytes:
-            return False, None
-        frame = np.frombuffer(data, dtype=np.uint8).reshape((self.height, self.width, 3))
-        return True, frame
+
+        for _ in range(600):
+            with self._lock:
+                if self._latest_frame is not None:
+                    return True, self._latest_frame.copy()
+            if self._reader_stopped.is_set():
+                return False, None
+            time.sleep(0.005)
+
+        return False, None
 
     def set(self, prop_id: int, value: float) -> bool:
         return False
@@ -100,12 +123,15 @@ class FFmpegCamera:
         return 0.0
 
     def release(self):
+        self._reader_stopped.set()
         if self.process.poll() is None:
             self.process.terminate()
             try:
                 self.process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 self.process.kill()
+        if self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=1)
         if self.process.stdout is not None:
             self.process.stdout.close()
 

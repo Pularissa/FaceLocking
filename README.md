@@ -29,17 +29,40 @@ python -m src.enroll --name TargetPerson --cam 1 --samples 15
 Start recognition and tracking without hardware first:
 
 ```powershell
-python -m src.track_target --target TargetPerson --cam 1
+python -m src.track_target --target TargetPerson --cam 0
 ```
+
+Face lock controls:
+
+- Press `L` while the recognized target is visible to lock that face.
+- Press `U` to unlock and return to automatic target selection.
+- Press `SPACE` to pause/resume servo tracking.
+- Press `Q` to exit.
+
+The lock uses the last selected face position to keep the servo from switching to another matching face. It remains armed during brief occlusion and reacquires the nearest recognized face when it returns.
+
+Expression messages:
+
+- When the recognized face closes their eyes or blinks, the window shows `Message: BLINK / EYES CLOSED`.
+- When the recognized face smiles, the window shows `Message: SMILE`.
+- Messages also print in the terminal and are debounced to avoid repeated spam.
 
 After the on-screen recognition is correct, connect the ESP8266 and run either:
 
 ```powershell
 python -m src.test_servo --port COM13
-python -m src.track_target --target TargetPerson --cam 1 --port COM13
+python -m src.track_target --target TargetPerson --cam 0 --port COM13
 ```
 
 Replace `COM13` with the COM port shown in Windows Device Manager. The ESP8266 firmware must be uploaded first, with the servo signal on `D1`, a separate 5 V servo supply, and a shared ground.
+
+Required hardware:
+
+- Windows PC with Python 3.11 and a working webcam. Use `python -m src.camera --list-cams` to find the camera index.
+- ESP8266 NodeMCU or D1 Mini, when servo movement is required.
+- SG90 or compatible servo. Connect signal to `D1/GPIO5`, red to a stable 5 V supply, and brown/black to GND.
+- Common ground between the ESP8266 and the servo supply.
+- USB cable from the ESP8266 to the PC. Upload `firmware/esp8266_servo/esp8266_servo.ino` with Arduino IDE, then use the detected COM port.
 
 If camera enumeration works but opening a camera fails, close Teams, Zoom, OBS, Camera, and other programs using the webcam, then check Windows Settings > Privacy & security > Camera and enable desktop-app camera access. The camera utility also tries an FFmpeg DirectShow fallback by device name and will use the integrated camera if the selected external camera does not produce frames. Reconnect the USB camera and repeat `python -m src.camera --list-cams`.
 
