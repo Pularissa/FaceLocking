@@ -140,10 +140,11 @@ def _open_ffmpeg_camera(preferred_name: str):
     if not sys.platform.startswith("win") or not shutil.which("ffmpeg"):
         return None
 
+    cameras = list_available_cameras()
     names = [preferred_name]
-    for camera in list_available_cameras():
+    for camera in cameras:
         name = str(camera["name"])
-        if name not in names and not camera["is_virtual"]:
+        if name not in names and camera["is_external_physical"]:
             names.append(name)
 
     for name in names:

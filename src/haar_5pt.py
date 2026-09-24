@@ -38,6 +38,8 @@ class FaceBox5pt:
     y2: int
     kps: np.ndarray  # (5, 2) float32: [left_eye, right_eye, nose, mouth_left, mouth_right]
     expression: str = ""
+    smile_width: float = 0.0
+    smile_lift: float = 0.0
 
 
 def _distance(a: np.ndarray, b: np.ndarray) -> float:
@@ -50,7 +52,7 @@ def _eye_aspect_ratio(points: np.ndarray) -> float:
     )
 
 
-def _expression_from_landmarks(landmarks, face_width: float) -> str:
+def _expression_metrics(landmarks, face_width: float) -> Tuple[float, float, float]:
     left_eye = np.array(
         [[landmarks[i].x, landmarks[i].y] for i in [33, 160, 158, 133, 153, 144]],
         dtype=np.float32,
@@ -71,9 +73,14 @@ def _expression_from_landmarks(landmarks, face_width: float) -> str:
     smile_width = mouth_width / max(face_width, 1e-6)
     smile_lift = corner_lift / max(face_width, 1e-6)
 
+    return eye_ratio, smile_width, smile_lift
+
+
+def _expression_from_landmarks(landmarks, face_width: float) -> str:
+    eye_ratio, smile_width, smile_lift = _expression_metrics(landmarks, face_width)
     if eye_ratio < 0.20:
         return "BLINK / EYES CLOSED"
-    if smile_width > 0.36 or smile_lift > 0.006:
+    if smile_width > 0.25 or smile_lift > 0.002:
         return "SMILE"
     return ""
 
@@ -199,8 +206,16 @@ class Haar5ptDetector:
                     x2 = int(min(W, max_x + margin_x))
                     y2 = int(min(H, max_y + margin_y))
 
-                    expression = _expression_from_landmarks(lm, max_x - min_x)
-                    detected_faces.append(FaceBox5pt(x1, y1, x2, y2, kps, expression))
+                    face_width = max_x - min_x
+                    expression_face_width = max(
+                        max(point.x for point in lm) - min(point.x for point in lm),
+                        1e-6,
+                    )
+                    expression = _expression_from_landmarks(lm, expression_face_width)
+                    _, smile_width, smile_lift = _expression_metrics(lm, expression_face_width)
+                    detected_faces.append(
+                        FaceBox5pt(x1, y1, x2, y2, kps, expression, smile_width, smile_lift)
+                    )
                 return detected_faces
 
         elif self.backend == "haar_fallback" and hasattr(self, "face_cascade"):

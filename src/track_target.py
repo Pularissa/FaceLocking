@@ -33,6 +33,8 @@ from .camera import open_camera, print_camera_list
 
 DB_JSON = Path("data/db/face_db.json")
 DB_NPZ = Path("data/db/face_db.npz")
+ENROLL_DIR = Path("data/enroll")
+DEFAULT_CAMERA = "1"
 
 MATCH_THRESHOLD = 0.40
 DEFAULT_CAMERA_FOV = 65.0  # Typical USB webcam horizontal field of view in degrees
@@ -71,6 +73,22 @@ def cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
     return 1.0 - sim
 
 
+def load_smile_baseline(target_name: str, detector: Haar5ptDetector):
+    widths = []
+    lifts = []
+    for image_path in sorted((ENROLL_DIR / target_name).glob("*.jpg")):
+        image = cv2.imread(str(image_path))
+        if image is None:
+            continue
+        faces = detector.detect(image, max_faces=1)
+        if faces:
+            widths.append(faces[0].smile_width)
+            lifts.append(faces[0].smile_lift)
+    if not widths:
+        return 0.0, 0.0
+    return float(np.median(widths)), float(np.median(lifts))
+
+
 def main(
     target_name: str,
     cam_index: Union[int, str] = "auto",
@@ -105,6 +123,8 @@ def main(
 
     det = Haar5ptDetector(min_size=(65, 65), smooth_alpha=0.85, debug=False)
     embedder = ArcFaceEmbedderONNX(debug=False)
+    baseline_width, baseline_lift = load_smile_baseline(target_name, det)
+    print(f"[Expression] Enrollment baseline: mouth={baseline_width:.3f}, lift={baseline_lift:.3f}")
 
     # Open physical camera
     cap = open_camera(cam_index)
@@ -210,6 +230,12 @@ def main(
         if target_box is not None:
             last_seen_time = now
             expression = target_box.expression
+            if expression != "BLINK / EYES CLOSED":
+                is_smiling = (
+                    target_box.smile_width > baseline_width + 0.003
+                    or target_box.smile_lift > baseline_lift + 0.001
+                )
+                expression = "SMILE" if is_smiling else "NEUTRAL"
             if expression:
                 last_expression = expression
                 if now - last_expression_message_time > 1.0:
@@ -279,10 +305,9 @@ def main(
             cv2.line(frame, (int(center_x), int(center_y)), (int(face_center_x), int(face_center_y)), (0, 255, 255), 2)
 
         else:
-            if now - last_seen_time > 1.2:
-                direction_label = "TARGET LOST"
-            else:
-                direction_label = "HOLDING POSITION"
+            direction_label = "SEARCHING..."
+            last_expression = ""
+            last_expression_message_time = 0.0
 
         # Low-pass filter for smooth motion (alpha = 0.60 direct, 0.30 cinematic)
         alpha = 0.60 if (tracking_mode == 1) else 0.30
@@ -331,7 +356,15 @@ def main(
         cv2.putText(frame, f"Target: {target_name} | {lock_str} | [{direction_label}]", (15, 28),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
 
-        if last_expression and now - last_expression_message_time < 1.5:
+        if target_box is None:
+            banner_text = f"SEARCHING FOR {target_name.upper()}..."
+            (text_width, text_height), _ = cv2.getTextSize(
+                banner_text, cv2.FONT_HERSHEY_SIMPLEX, 0.75, 2
+            )
+            cv2.rectangle(frame, (10, 92), (25 + text_width, 105 + text_height), (0, 0, 0), -1)
+            cv2.putText(frame, banner_text, (18, 98 + text_height),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2)
+        elif last_expression and now - last_expression_message_time < 1.5:
             banner_text = f"MESSAGE: {last_expression}"
             (text_width, text_height), _ = cv2.getTextSize(
                 banner_text, cv2.FONT_HERSHEY_SIMPLEX, 0.75, 2
@@ -432,7 +465,7 @@ def main(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="High-Accuracy 1-to-1 Horizontal Face Tracker")
     parser.add_argument("--target", required=False, default=None, help="Enrolled target person name")
-    parser.add_argument("--cam", default="auto", help="Camera index, 'auto' for physical external camera, or stream URL")
+    parser.add_argument("--cam", default=DEFAULT_CAMERA, help="Camera index, 'auto' for physical external camera, or stream URL")
     parser.add_argument("--port", type=str, default=None, help="Serial port (e.g. COM13)")
     parser.add_argument("--ip", type=str, default=None, help="ESP8266 WiFi IP address (e.g. 192.168.4.1 or 192.168.1.100)")
     parser.add_argument("--udp-port", type=int, default=8888, help="ESP8266 UDP port (default: 8888)")

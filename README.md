@@ -23,13 +23,13 @@ Press `Q` to close the live view. The camera index may differ on another compute
 Enroll one person. Keep the face well lit and move slightly between samples:
 
 ```powershell
-python -m src.enroll --name TargetPerson --cam 1 --samples 15
+python -m src.enroll --name "Larissa Prisca" --cam 1 --samples 15
 ```
 
 Start recognition and tracking without hardware first:
 
 ```powershell
-python -m src.track_target --target TargetPerson --cam 0
+python -m src.track_target --target "Larissa Prisca" --cam 1
 ```
 
 Face lock controls:
@@ -51,7 +51,7 @@ After the on-screen recognition is correct, connect the ESP8266 and run either:
 
 ```powershell
 python -m src.test_servo --port COM13
-python -m src.track_target --target TargetPerson --cam 0 --port COM13
+python -m src.track_target --target "Larissa Prisca" --cam 1 --port COM13
 ```
 
 Replace `COM13` with the COM port shown in Windows Device Manager. The ESP8266 firmware must be uploaded first, with the servo signal on `D1`, a separate 5 V servo supply, and a shared ground.
